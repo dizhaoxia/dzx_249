@@ -12,6 +12,11 @@ import {
   message,
   Divider,
   Avatar,
+  Modal,
+  Form,
+  DatePicker,
+  InputNumber,
+  Alert,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -25,9 +30,13 @@ import {
   ClockCircleOutlined,
   UserOutlined,
   CrownOutlined,
+  EditOutlined,
+  SettingOutlined,
+  WarningOutlined,
+  CheckCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
-import dayjs from 'dayjs';
+import dayjs, { Dayjs } from 'dayjs';
 import {
   getOrderDetail,
   joinOrder,
@@ -38,6 +47,8 @@ import {
   addOrderItem,
   updateOrderItem,
   deleteOrderItem,
+  updateOrderDeadline,
+  updateOrderMinParticipants,
 } from '../api/orders';
 import { OrderDetail, OrderItem } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -47,8 +58,17 @@ import ParticipantList from '../components/ParticipantList';
 import AllItemsList from '../components/AllItemsList';
 import DishForm from '../components/DishForm';
 import ShareLinkBox from '../components/ShareLinkBox';
+import MenuOrdering from '../components/MenuOrdering';
 
 const { Title, Text } = Typography;
+
+interface DeadlineFormData {
+  deadline: Dayjs;
+}
+
+interface MinParticipantsFormData {
+  min_participants: number;
+}
 
 export default function OrderDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -60,6 +80,14 @@ export default function OrderDetailPage() {
   const [editingItem, setEditingItem] = useState<OrderItem | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const pollingRef = useRef<number | null>(null);
+
+  const [deadlineModalVisible, setDeadlineModalVisible] = useState(false);
+  const [deadlineForm] = Form.useForm<DeadlineFormData>();
+
+  const [minParticipantsModalVisible, setMinParticipantsModalVisible] = useState(false);
+  const [minParticipantsForm] = Form.useForm<MinParticipantsFormData>();
+
+  const [showManualDishForm, setShowManualDishForm] = useState(false);
 
   const orderId = id || '';
 
@@ -208,6 +236,40 @@ export default function OrderDetailPage() {
     setEditingItem(null);
   };
 
+  const handleUpdateDeadline = async () => {
+    try {
+      const values = await deadlineForm.validateFields();
+      setActionLoading('deadline');
+      const result = await updateOrderDeadline(orderId, {
+        deadline: values.deadline.toISOString(),
+      });
+      setDetail(result);
+      setDeadlineModalVisible(false);
+      message.success('截止时间已更新');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleUpdateMinParticipants = async () => {
+    try {
+      const values = await minParticipantsForm.validateFields();
+      setActionLoading('minParticipants');
+      const result = await updateOrderMinParticipants(orderId, {
+        min_participants: values.min_participants,
+      });
+      setDetail(result);
+      setMinParticipantsModalVisible(false);
+      message.success('最低参与人数已更新');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const myItems = detail
     ? detail.orderItems.filter((item) => item.user_id === user?.id)
     : [];
@@ -238,11 +300,15 @@ export default function OrderDetailPage() {
     );
   }
 
-  const { order, participants, orderItems, myAmount, totalAmount, participantCount, aaAmount, isOwner, isParticipant } = detail;
+  const { order, participants, orderItems, myAmount, totalAmount, participantCount, aaAmount, isOwner, isParticipant, dishes } = detail;
   const isFinished = order.status === 'finished';
   const isExpired = order.deadline && dayjs().isAfter(dayjs(order.deadline));
   const ownerNickname =
     participants.find((p) => p.user_id === order.owner_id)?.nickname || '';
+
+  const minParticipants = order.min_participants || 0;
+  const needsMoreParticipants = minParticipants > 0 && participantCount < minParticipants;
+  const hasMenu = dishes && dishes.length > 0;
 
   const statusTag = isFinished ? (
     <Tag color="default" icon={<StopOutlined />}>已结束</Tag>
@@ -250,6 +316,29 @@ export default function OrderDetailPage() {
     <Tag color="orange">已超时</Tag>
   ) : (
     <Tag color="green" icon={<PlayCircleOutlined />}>进行中</Tag>
+  );
+
+  const finishConfirmContent = (
+    <div>
+      <p>确定要结束拼单吗？结束后将变为只读账单，无法再点餐。</p>
+      {needsMoreParticipants && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<WarningOutlined />}
+          message={`当前参与人数 (${participantCount}人) 未达到最低要求 (${minParticipants}人)`}
+          style={{ marginTop: 12 }}
+        />
+      )}
+      {myAmount === 0 && isParticipant && (
+        <Alert
+          type="info"
+          showIcon
+          message="您还没有点餐，确定要结束拼单吗？"
+          style={{ marginTop: 12 }}
+        />
+      )}
+    </div>
   );
 
   return (
@@ -275,11 +364,20 @@ export default function OrderDetailPage() {
             刷新
           </Button>
           {!isFinished && isOwner && (
+            <Button
+              icon={<SettingOutlined />}
+              onClick={() => setMinParticipantsModalVisible(true)}
+            >
+              设置
+            </Button>
+          )}
+          {!isFinished && isOwner && (
             <Popconfirm
-              title="确定要结束拼单吗？结束后将变为只读账单，无法再点餐。"
+              title={finishConfirmContent}
               onConfirm={handleFinish}
               okText="确定结束"
               cancelText="取消"
+              okButtonProps={{ danger: true }}
             >
               <Button
                 type="primary"
@@ -311,6 +409,22 @@ export default function OrderDetailPage() {
         </Space>
       </div>
 
+      {!isFinished && isOwner && needsMoreParticipants && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<WarningOutlined />}
+          message={`参与人数不足：当前 ${participantCount} 人，最低需要 ${minParticipants} 人，还差 ${minParticipants - participantCount} 人`}
+          action={
+            <Button size="small" type="primary" onClick={() => setMinParticipantsModalVisible(true)}>
+              修改设置
+            </Button>
+          }
+          style={{ marginBottom: 16 }}
+          closable
+        />
+      )}
+
       <Row gutter={[24, 24]}>
         <Col xs={24} lg={16}>
           <Card>
@@ -336,8 +450,8 @@ export default function OrderDetailPage() {
                   {formatDateTime(order.created_at)}
                 </Space>
               </Col>
-              {order.deadline && (
-                <Col xs={24} sm={12}>
+              <Col xs={24} sm={12}>
+                {order.deadline && (
                   <Space>
                     <ClockCircleOutlined style={{ color: isExpired ? '#fa8c16' : '#8c8c8c' }} />
                     <Text type="secondary">截止时间：</Text>
@@ -345,6 +459,41 @@ export default function OrderDetailPage() {
                       {formatDateTime(order.deadline)}
                       {isExpired && ' (已超时)'}
                     </span>
+                    {!isFinished && isOwner && (
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={() => {
+                          deadlineForm.setFieldsValue({
+                            deadline: dayjs(order.deadline!),
+                          });
+                          setDeadlineModalVisible(true);
+                        }}
+                      >
+                        修改
+                      </Button>
+                    )}
+                  </Space>
+                )}
+              </Col>
+              {minParticipants > 0 && (
+                <Col xs={24} sm={12}>
+                  <Space>
+                    <UserOutlined style={{ color: '#8c8c8c' }} />
+                    <Text type="secondary">最低人数：</Text>
+                    <Space>
+                      <strong>{minParticipants} 人</strong>
+                      {needsMoreParticipants ? (
+                        <Tag color="orange" icon={<WarningOutlined />}>
+                          还差 {minParticipants - participantCount} 人
+                        </Tag>
+                      ) : (
+                        <Tag color="green" icon={<CheckCircleOutlined />}>
+                          已达标
+                        </Tag>
+                      )}
+                    </Space>
                   </Space>
                 </Col>
               )}
@@ -414,10 +563,29 @@ export default function OrderDetailPage() {
           </Card>
 
           {isOwner && !isFinished && (
-            <ShareLinkBox orderId={orderId} />
+            <ShareLinkBox
+              orderId={orderId}
+              orderName={order.name}
+              merchant={order.merchant}
+              deadline={order.deadline}
+              participantCount={participantCount}
+              minParticipants={minParticipants}
+            />
           )}
 
-          {isParticipant && (
+          {isParticipant && hasMenu && (
+            <MenuOrdering
+              orderId={orderId}
+              dishes={dishes!}
+              myItems={myItems}
+              participants={participants}
+              currentUserId={user?.id || ''}
+              disabled={isFinished}
+              onOrderUpdated={() => loadDetail(false)}
+            />
+          )}
+
+          {isParticipant && (!hasMenu || showManualDishForm) && (
             <DishForm
               disabled={isFinished}
               editingItem={editingItem}
@@ -427,6 +595,14 @@ export default function OrderDetailPage() {
               myItems={myItems}
               currentUserId={user?.id || ''}
             />
+          )}
+
+          {isParticipant && hasMenu && !isFinished && (
+            <div style={{ textAlign: 'center', marginTop: 16 }}>
+              <Button type="link" onClick={() => setShowManualDishForm(!showManualDishForm)}>
+                {showManualDishForm ? '收起手动添加' : '需要手动添加菜品？'}
+              </Button>
+            </div>
           )}
 
           <AllItemsList
@@ -512,6 +688,68 @@ export default function OrderDetailPage() {
           )}
         </Col>
       </Row>
+
+      <Modal
+        title="修改截止时间"
+        open={deadlineModalVisible}
+        onOk={handleUpdateDeadline}
+        onCancel={() => setDeadlineModalVisible(false)}
+        confirmLoading={actionLoading === 'deadline'}
+        okText="保存"
+      >
+        <Form form={deadlineForm} layout="vertical">
+          <Form.Item
+            label="新的截止时间"
+            name="deadline"
+            rules={[{ required: true, message: '请选择截止时间' }]}
+          >
+            <DatePicker
+              showTime
+              format="YYYY-MM-DD HH:mm"
+              style={{ width: '100%' }}
+              placeholder="选择截止时间"
+              disabledDate={(current) =>
+                current && current < dayjs().startOf('day')
+              }
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="拼单设置"
+        open={minParticipantsModalVisible}
+        onOk={handleUpdateMinParticipants}
+        onCancel={() => setMinParticipantsModalVisible(false)}
+        confirmLoading={actionLoading === 'minParticipants'}
+        okText="保存"
+      >
+        <Form form={minParticipantsForm} layout="vertical">
+          <Form.Item
+            label={
+              <Space>
+                最低参与人数
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  （参与人数未达标时会提醒发起人）
+                </Text>
+              </Space>
+            }
+            name="min_participants"
+            initialValue={minParticipants}
+            rules={[
+              { type: 'number', min: 0, max: 100, message: '范围为0-100' },
+            ]}
+          >
+            <InputNumber
+              min={0}
+              max={100}
+              style={{ width: '100%' }}
+              placeholder="0表示不限制"
+              addonAfter="人"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import RegisterPage from './pages/RegisterPage';
 import OrderListPage from './pages/OrderListPage';
 import CreateOrderPage from './pages/CreateOrderPage';
 import OrderDetailPage from './pages/OrderDetailPage';
+import MerchantManagementPage from './pages/MerchantManagementPage';
 import AppLayout from './components/AppLayout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -76,6 +77,7 @@ export default function App() {
         <Route path="orders" element={<OrderListPage />} />
         <Route path="orders/create" element={<CreateOrderPage />} />
         <Route path="orders/:id" element={<OrderDetailPage />} />
+        <Route path="merchants" element={<MerchantManagementPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

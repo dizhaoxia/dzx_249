@@ -17,7 +17,11 @@ export default function AppLayout() {
     navigate('/login');
   };
 
-  const selectedKey = location.pathname.includes('/orders') ? 'orders' : 'orders';
+  const selectedKey = location.pathname.includes('/merchants')
+    ? 'merchants'
+    : location.pathname.includes('/orders/create')
+    ? 'create'
+    : 'orders';
 
   const userMenu = {
     items: [
@@ -49,10 +53,13 @@ export default function AppLayout() {
           <Menu
             mode="horizontal"
             selectedKeys={[selectedKey]}
-            style={{ borderBottom: 'none', minWidth: 200 }}
+            style={{ borderBottom: 'none', minWidth: 300 }}
           >
             <Menu.Item key="orders">
               <Link to="/orders">拼单列表</Link>
+            </Menu.Item>
+            <Menu.Item key="merchants">
+              <Link to="/merchants">商家管理</Link>
             </Menu.Item>
           </Menu>
         </div>

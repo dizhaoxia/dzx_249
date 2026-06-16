@@ -9,15 +9,61 @@ import {
   OrderItem,
   Participant,
   User,
+  Merchant,
+  Dish,
   CreateOrderRequest,
   AddOrderItemRequest,
   UpdateOrderItemRequest,
+  BatchAddOrderItemsRequest,
+  CopyOrderItemsRequest,
+  UpdateOrderDeadlineRequest,
+  UpdateOrderMinParticipantsRequest,
 } from '../types';
 
 const router = Router();
 
-router.get('/merchants', authMiddleware, (_req: Request, res: Response) => {
-  res.json({ merchants: PRESET_MERCHANTS });
+router.get('/merchants', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: '未登录' });
+    }
+
+    const db = await getDb();
+    const dbMerchants = await db.all(`
+      SELECT m.*, 
+        (SELECT COUNT(*) FROM dishes d WHERE d.merchant_id = m.id) as dish_count
+      FROM merchants m
+      WHERE m.owner_id = ? OR m.is_shared = 1
+      ORDER BY m.created_at DESC
+    `, [req.user.userId]);
+
+    const presetMerchants = PRESET_MERCHANTS.map((name, index) => ({
+      id: `preset-${index}`,
+      name,
+      cover_image: null,
+      description: null,
+      owner_id: '',
+      is_shared: 1,
+      dish_count: 0,
+      is_preset: true,
+    }));
+
+    const allMerchants = [...dbMerchants.map(m => ({ ...m, is_preset: false })), ...presetMerchants];
+
+    res.json({ merchants: allMerchants });
+  } catch (error) {
+    console.error('Get merchants error:', error);
+    res.json({ merchants: PRESET_MERCHANTS.map((name, index) => ({
+      id: `preset-${index}`,
+      name,
+      cover_image: null,
+      description: null,
+      owner_id: '',
+      is_shared: 1,
+      dish_count: 0,
+      is_preset: true,
+    }))});
+  }
 });
 
 router.post('/', authMiddleware, async (req: Request, res: Response) => {
@@ -26,7 +72,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
       return res.status(401).json({ error: '未登录' });
     }
 
-    const { name, merchant, deadline } = req.body as CreateOrderRequest;
+    const { name, merchant, merchant_id, deadline, min_participants } = req.body as CreateOrderRequest;
 
     if (!name || !merchant) {
       return res.status(400).json({ error: '拼单名称和商家为必填项' });
@@ -40,13 +86,17 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
       return res.status(400).json({ error: '商家名称不能超过50个字符' });
     }
 
+    if (min_participants !== undefined && (min_participants < 0 || min_participants > 100)) {
+      return res.status(400).json({ error: '最低参与人数范围为0-100' });
+    }
+
     const db = await getDb();
     const orderId = uuidv4();
     const createdAt = dayjs().toISOString();
 
     await db.run(
-      'INSERT INTO group_orders (id, name, merchant, deadline, owner_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [orderId, name, merchant, deadline || null, req.user.userId, 'active', createdAt]
+      'INSERT INTO group_orders (id, name, merchant, merchant_id, deadline, min_participants, owner_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [orderId, name, merchant, merchant_id || null, deadline || null, min_participants || 0, req.user.userId, 'active', createdAt]
     );
 
     await db.run(
@@ -132,6 +182,24 @@ async function getOrderDetail(db: any, orderId: string, currentUserId: string) {
   const isOwner = order.owner_id === currentUserId;
   const isParticipant = participants.some((p: Participant & { nickname: string }) => p.user_id === currentUserId);
 
+  let merchant: Merchant | undefined;
+  let dishes: Dish[] | undefined;
+
+  if (order.merchant_id) {
+    merchant = (await db.get(`
+      SELECT * FROM merchants 
+      WHERE id = ? AND (owner_id = ? OR is_shared = 1)
+    `, [order.merchant_id, currentUserId])) as Merchant | undefined;
+
+    if (merchant) {
+      dishes = (await db.all(`
+        SELECT * FROM dishes 
+        WHERE merchant_id = ?
+        ORDER BY category, created_at
+      `, [order.merchant_id])) as Dish[];
+    }
+  }
+
   return {
     order,
     participants,
@@ -142,6 +210,8 @@ async function getOrderDetail(db: any, orderId: string, currentUserId: string) {
     aaAmount,
     isOwner,
     isParticipant,
+    merchant,
+    dishes,
   };
 }
 
@@ -500,6 +570,261 @@ router.delete('/:id/items/:itemId', authMiddleware, async (req: Request, res: Re
   } catch (error) {
     console.error('Delete order item error:', error);
     res.status(500).json({ error: '删除菜品失败' });
+  }
+});
+
+router.post('/:id/items/batch', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: '未登录' });
+    }
+
+    const { items } = req.body as BatchAddOrderItemsRequest;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: '菜品列表不能为空' });
+    }
+
+    const db = await getDb();
+    const order = await db.get<GroupOrder>('SELECT * FROM group_orders WHERE id = ?', [req.params.id]);
+
+    if (!order) {
+      return res.status(404).json({ error: '拼单不存在' });
+    }
+
+    if (order.status === 'finished') {
+      return res.status(400).json({ error: '拼单已结束，无法添加菜品' });
+    }
+
+    const participant = await db.get(
+      'SELECT * FROM participants WHERE order_id = ? AND user_id = ?',
+      [req.params.id, req.user.userId]
+    );
+
+    if (!participant) {
+      return res.status(400).json({ error: '请先加入拼单' });
+    }
+
+    const now = dayjs().toISOString();
+
+    for (const item of items) {
+      const { dish_name, price, quantity, dish_id } = item;
+
+      if (!dish_name || price === undefined || quantity === undefined) {
+        return res.status(400).json({ error: '菜品名、单价和数量为必填项' });
+      }
+
+      if (dish_name.length > 100) {
+        return res.status(400).json({ error: '菜品名称不能超过100个字符' });
+      }
+
+      if (price < 0 || price > 10000) {
+        return res.status(400).json({ error: '单价范围为0-10000' });
+      }
+
+      if (quantity < 1 || quantity > 999) {
+        return res.status(400).json({ error: '数量范围为1-999' });
+      }
+
+      const itemId = uuidv4();
+
+      await db.run(
+        'INSERT INTO order_items (id, order_id, user_id, dish_name, price, quantity, dish_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [itemId, req.params.id, req.user.userId, dish_name, price, quantity, dish_id || null, now, now]
+      );
+    }
+
+    const detail = await getOrderDetail(db, req.params.id, req.user.userId);
+    res.json(detail);
+  } catch (error) {
+    console.error('Batch add order items error:', error);
+    res.status(500).json({ error: '批量添加菜品失败' });
+  }
+});
+
+router.post('/:id/items/copy', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: '未登录' });
+    }
+
+    const { from_user_id } = req.body as CopyOrderItemsRequest;
+
+    if (!from_user_id) {
+      return res.status(400).json({ error: '目标用户ID为必填项' });
+    }
+
+    if (from_user_id === req.user.userId) {
+      return res.status(400).json({ error: '不能复制自己的点餐' });
+    }
+
+    const db = await getDb();
+    const order = await db.get<GroupOrder>('SELECT * FROM group_orders WHERE id = ?', [req.params.id]);
+
+    if (!order) {
+      return res.status(404).json({ error: '拼单不存在' });
+    }
+
+    if (order.status === 'finished') {
+      return res.status(400).json({ error: '拼单已结束，无法复制点餐' });
+    }
+
+    const participant = await db.get(
+      'SELECT * FROM participants WHERE order_id = ? AND user_id = ?',
+      [req.params.id, req.user.userId]
+    );
+
+    if (!participant) {
+      return res.status(400).json({ error: '请先加入拼单' });
+    }
+
+    const sourceItems = (await db.all(
+      'SELECT * FROM order_items WHERE order_id = ? AND user_id = ?',
+      [req.params.id, from_user_id]
+    )) as OrderItem[];
+
+    if (sourceItems.length === 0) {
+      return res.status(400).json({ error: '对方暂未点餐，无法复制' });
+    }
+
+    const now = dayjs().toISOString();
+
+    for (const item of sourceItems) {
+      const itemId = uuidv4();
+      await db.run(
+        'INSERT INTO order_items (id, order_id, user_id, dish_name, price, quantity, dish_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [itemId, req.params.id, req.user.userId, item.dish_name, item.price, item.quantity, item.dish_id, now, now]
+      );
+    }
+
+    const detail = await getOrderDetail(db, req.params.id, req.user.userId);
+    res.json(detail);
+  } catch (error) {
+    console.error('Copy order items error:', error);
+    res.status(500).json({ error: '复制点餐失败' });
+  }
+});
+
+router.delete('/:id/items/clear', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: '未登录' });
+    }
+
+    const db = await getDb();
+    const order = await db.get<GroupOrder>('SELECT * FROM group_orders WHERE id = ?', [req.params.id]);
+
+    if (!order) {
+      return res.status(404).json({ error: '拼单不存在' });
+    }
+
+    if (order.status === 'finished') {
+      return res.status(400).json({ error: '拼单已结束，无法清空点餐' });
+    }
+
+    const participant = await db.get(
+      'SELECT * FROM participants WHERE order_id = ? AND user_id = ?',
+      [req.params.id, req.user.userId]
+    );
+
+    if (!participant) {
+      return res.status(400).json({ error: '您还未加入拼单' });
+    }
+
+    await db.run(
+      'DELETE FROM order_items WHERE order_id = ? AND user_id = ?',
+      [req.params.id, req.user.userId]
+    );
+
+    const detail = await getOrderDetail(db, req.params.id, req.user.userId);
+    res.json(detail);
+  } catch (error) {
+    console.error('Clear order items error:', error);
+    res.status(500).json({ error: '清空点餐失败' });
+  }
+});
+
+router.put('/:id/deadline', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: '未登录' });
+    }
+
+    const { deadline } = req.body as UpdateOrderDeadlineRequest;
+
+    if (!deadline) {
+      return res.status(400).json({ error: '截止时间为必填项' });
+    }
+
+    const db = await getDb();
+    const order = await db.get<GroupOrder>('SELECT * FROM group_orders WHERE id = ?', [req.params.id]);
+
+    if (!order) {
+      return res.status(404).json({ error: '拼单不存在' });
+    }
+
+    if (order.owner_id !== req.user.userId) {
+      return res.status(403).json({ error: '只有发起人可以修改截止时间' });
+    }
+
+    if (order.status === 'finished') {
+      return res.status(400).json({ error: '拼单已结束，无法修改截止时间' });
+    }
+
+    await db.run(
+      'UPDATE group_orders SET deadline = ?, updated_at = ? WHERE id = ?',
+      [deadline, dayjs().toISOString(), req.params.id]
+    );
+
+    const detail = await getOrderDetail(db, req.params.id, req.user.userId);
+    res.json(detail);
+  } catch (error) {
+    console.error('Update order deadline error:', error);
+    res.status(500).json({ error: '修改截止时间失败' });
+  }
+});
+
+router.put('/:id/min-participants', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: '未登录' });
+    }
+
+    const { min_participants } = req.body as UpdateOrderMinParticipantsRequest;
+
+    if (min_participants === undefined) {
+      return res.status(400).json({ error: '最低参与人数为必填项' });
+    }
+
+    if (min_participants < 0 || min_participants > 100) {
+      return res.status(400).json({ error: '最低参与人数范围为0-100' });
+    }
+
+    const db = await getDb();
+    const order = await db.get<GroupOrder>('SELECT * FROM group_orders WHERE id = ?', [req.params.id]);
+
+    if (!order) {
+      return res.status(404).json({ error: '拼单不存在' });
+    }
+
+    if (order.owner_id !== req.user.userId) {
+      return res.status(403).json({ error: '只有发起人可以修改最低参与人数' });
+    }
+
+    if (order.status === 'finished') {
+      return res.status(400).json({ error: '拼单已结束，无法修改最低参与人数' });
+    }
+
+    await db.run(
+      'UPDATE group_orders SET min_participants = ?, updated_at = ? WHERE id = ?',
+      [min_participants, dayjs().toISOString(), req.params.id]
+    );
+
+    const detail = await getOrderDetail(db, req.params.id, req.user.userId);
+    res.json(detail);
+  } catch (error) {
+    console.error('Update order min participants error:', error);
+    res.status(500).json({ error: '修改最低参与人数失败' });
   }
 });
 

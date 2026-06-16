@@ -3,6 +3,7 @@ import cors from 'cors';
 import { config } from './config';
 import authRoutes from './routes/auth';
 import orderRoutes from './routes/orders';
+import merchantRoutes from './routes/merchants';
 
 const app = express();
 
@@ -19,6 +20,7 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/merchants', merchantRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: '接口不存在' });

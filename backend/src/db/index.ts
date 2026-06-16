@@ -29,16 +29,43 @@ async function initDatabase(db: Database) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS merchants (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      cover_image TEXT,
+      description TEXT,
+      owner_id TEXT NOT NULL,
+      is_shared INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (owner_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS dishes (
+      id TEXT PRIMARY KEY,
+      merchant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      price REAL NOT NULL,
+      image TEXT,
+      category TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (merchant_id) REFERENCES merchants(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS group_orders (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       merchant TEXT NOT NULL,
+      merchant_id TEXT,
       deadline TEXT,
+      min_participants INTEGER DEFAULT 0,
       owner_id TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       finished_at TEXT,
-      FOREIGN KEY (owner_id) REFERENCES users(id)
+      FOREIGN KEY (owner_id) REFERENCES users(id),
+      FOREIGN KEY (merchant_id) REFERENCES merchants(id)
     );
 
     CREATE TABLE IF NOT EXISTS participants (
@@ -57,16 +84,41 @@ async function initDatabase(db: Database) {
       dish_name TEXT NOT NULL,
       price REAL NOT NULL,
       quantity INTEGER NOT NULL,
+      dish_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (order_id) REFERENCES group_orders(id),
-      FOREIGN KEY (user_id) REFERENCES users(id)
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (dish_id) REFERENCES dishes(id)
     );
 
+    CREATE INDEX IF NOT EXISTS idx_merchants_owner ON merchants(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_merchants_shared ON merchants(is_shared);
+    CREATE INDEX IF NOT EXISTS idx_dishes_merchant ON dishes(merchant_id);
+    CREATE INDEX IF NOT EXISTS idx_dishes_category ON dishes(category);
     CREATE INDEX IF NOT EXISTS idx_group_orders_owner ON group_orders(owner_id);
     CREATE INDEX IF NOT EXISTS idx_group_orders_status ON group_orders(status);
+    CREATE INDEX IF NOT EXISTS idx_group_orders_merchant ON group_orders(merchant_id);
     CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
     CREATE INDEX IF NOT EXISTS idx_order_items_user ON order_items(user_id);
+    CREATE INDEX IF NOT EXISTS idx_order_items_dish ON order_items(dish_id);
     CREATE INDEX IF NOT EXISTS idx_participants_order ON participants(order_id);
   `);
+
+  await migrateExistingData(db);
+}
+
+async function migrateExistingData(db: Database) {
+  const merchantIdColumn = await db.get("PRAGMA table_info(group_orders) WHERE name = 'merchant_id'");
+  if (!merchantIdColumn) {
+    await db.run('ALTER TABLE group_orders ADD COLUMN merchant_id TEXT');
+  }
+  const minParticipantsColumn = await db.get("PRAGMA table_info(group_orders) WHERE name = 'min_participants'");
+  if (!minParticipantsColumn) {
+    await db.run('ALTER TABLE group_orders ADD COLUMN min_participants INTEGER DEFAULT 0');
+  }
+  const dishIdColumn = await db.get("PRAGMA table_info(order_items) WHERE name = 'dish_id'");
+  if (!dishIdColumn) {
+    await db.run('ALTER TABLE order_items ADD COLUMN dish_id TEXT');
+  }
 }
