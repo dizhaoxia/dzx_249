@@ -29,12 +29,14 @@ type StatusType = 'active' | 'finished';
 
 export default function OrderListPage() {
   const [activeTab, setActiveTab] = useState<StatusType>('active');
-  const [loading, setLoading] = useState(false);
+  const [activeLoading, setActiveLoading] = useState(false);
+  const [finishedLoading, setFinishedLoading] = useState(false);
   const [activeOrders, setActiveOrders] = useState<GroupOrderListItem[]>([]);
   const [finishedOrders, setFinishedOrders] = useState<GroupOrderListItem[]>([]);
   const navigate = useNavigate();
 
   const loadOrders = async (status: StatusType) => {
+    const setLoading = status === 'active' ? setActiveLoading : setFinishedLoading;
     setLoading(true);
     try {
       const result = await getOrders(status);
@@ -50,18 +52,12 @@ export default function OrderListPage() {
 
   useEffect(() => {
     loadOrders('active');
+    loadOrders('finished');
   }, []);
-
-  useEffect(() => {
-    if (activeTab === 'finished' && finishedOrders.length === 0) {
-      loadOrders('finished');
-    }
-  }, [activeTab]);
 
   const handleTabChange = (key: string) => {
     const status = key as StatusType;
     setActiveTab(status);
-    loadOrders(status);
   };
 
   const renderOrderCard = (order: GroupOrderListItem) => {
@@ -136,8 +132,8 @@ export default function OrderListPage() {
     );
   };
 
-  const renderTabContent = (orders: GroupOrderListItem[]) => {
-    if (loading) {
+  const renderTabContent = (orders: GroupOrderListItem[], isLoading: boolean) => {
+    if (isLoading) {
       return (
         <div style={{ textAlign: 'center', padding: 60 }}>
           <Spin size="large" />
@@ -183,12 +179,12 @@ export default function OrderListPage() {
           {
             key: 'active',
             label: `进行中 (${activeOrders.length})`,
-            children: renderTabContent(activeOrders),
+            children: renderTabContent(activeOrders, activeLoading),
           },
           {
             key: 'finished',
             label: `历史账单 (${finishedOrders.length})`,
-            children: renderTabContent(finishedOrders),
+            children: renderTabContent(finishedOrders, finishedLoading),
           },
         ]}
       />

@@ -109,16 +109,24 @@ async function initDatabase(db: Database) {
 }
 
 async function migrateExistingData(db: Database) {
-  const merchantIdColumn = await db.get("PRAGMA table_info(group_orders) WHERE name = 'merchant_id'");
-  if (!merchantIdColumn) {
-    await db.run('ALTER TABLE group_orders ADD COLUMN merchant_id TEXT');
-  }
-  const minParticipantsColumn = await db.get("PRAGMA table_info(group_orders) WHERE name = 'min_participants'");
-  if (!minParticipantsColumn) {
-    await db.run('ALTER TABLE group_orders ADD COLUMN min_participants INTEGER DEFAULT 0');
-  }
-  const dishIdColumn = await db.get("PRAGMA table_info(order_items) WHERE name = 'dish_id'");
-  if (!dishIdColumn) {
-    await db.run('ALTER TABLE order_items ADD COLUMN dish_id TEXT');
+  try {
+    const tableInfo = await db.all("PRAGMA table_info(group_orders)");
+    const columnNames = tableInfo.map((col: any) => col.name);
+
+    if (!columnNames.includes('merchant_id')) {
+      await db.run('ALTER TABLE group_orders ADD COLUMN merchant_id TEXT');
+    }
+    if (!columnNames.includes('min_participants')) {
+      await db.run('ALTER TABLE group_orders ADD COLUMN min_participants INTEGER DEFAULT 0');
+    }
+
+    const orderItemsInfo = await db.all("PRAGMA table_info(order_items)");
+    const orderItemColumns = orderItemsInfo.map((col: any) => col.name);
+
+    if (!orderItemColumns.includes('dish_id')) {
+      await db.run('ALTER TABLE order_items ADD COLUMN dish_id TEXT');
+    }
+  } catch (error) {
+    console.error('Migration error:', error);
   }
 }
